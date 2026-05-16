@@ -837,7 +837,6 @@ class AxesRenderer {
 
     fun drawSphere(viewMatrix: FloatArray, projMatrix: FloatArray, modelMatrix: FloatArray, color: FloatArray, radius: Float) {
         GLES20.glUseProgram(program)
-        GLES20.glLineWidth(4f)
         GLES20.glEnable(GLES20.GL_DEPTH_TEST)
 
         val mvMatrix = FloatArray(16)
@@ -845,22 +844,37 @@ class AxesRenderer {
         android.opengl.Matrix.multiplyMM(mvMatrix, 0, viewMatrix, 0, modelMatrix, 0)
         android.opengl.Matrix.multiplyMM(mvpMatrix, 0, projMatrix, 0, mvMatrix, 0)
         GLES20.glUniformMatrix4fv(mvpMatrixHandle, 1, false, mvpMatrix, 0)
+        GLES20.glUniform4fv(colorHandle, 1, color, 0)
 
-        val segments = 16
+        // Generate solid sphere using triangle strips (latitude/longitude)
+        val stacks = 10
+        val slices = 12
         val r = radius
-        for (plane in 0..2) {
-            val verts = FloatArray(segments * 6)
-            for (i in 0 until segments) {
-                val a1 = (i.toFloat() / segments) * 2f * Math.PI.toFloat()
-                val a2 = ((i + 1).toFloat() / segments) * 2f * Math.PI.toFloat()
-                val idx = i * 6
-                when (plane) {
-                    0 -> { verts[idx]=r*Math.cos(a1.toDouble()).toFloat(); verts[idx+1]=r*Math.sin(a1.toDouble()).toFloat(); verts[idx+2]=0f; verts[idx+3]=r*Math.cos(a2.toDouble()).toFloat(); verts[idx+4]=r*Math.sin(a2.toDouble()).toFloat(); verts[idx+5]=0f }
-                    1 -> { verts[idx]=r*Math.cos(a1.toDouble()).toFloat(); verts[idx+1]=0f; verts[idx+2]=r*Math.sin(a1.toDouble()).toFloat(); verts[idx+3]=r*Math.cos(a2.toDouble()).toFloat(); verts[idx+4]=0f; verts[idx+5]=r*Math.sin(a2.toDouble()).toFloat() }
-                    2 -> { verts[idx]=0f; verts[idx+1]=r*Math.cos(a1.toDouble()).toFloat(); verts[idx+2]=r*Math.sin(a1.toDouble()).toFloat(); verts[idx+3]=0f; verts[idx+4]=r*Math.cos(a2.toDouble()).toFloat(); verts[idx+5]=r*Math.sin(a2.toDouble()).toFloat() }
-                }
+
+        for (i in 0 until stacks) {
+            val lat0 = Math.PI * (-0.5 + i.toDouble() / stacks)
+            val lat1 = Math.PI * (-0.5 + (i + 1).toDouble() / stacks)
+            val y0 = (r * Math.sin(lat0)).toFloat()
+            val y1 = (r * Math.sin(lat1)).toFloat()
+            val r0 = (r * Math.cos(lat0)).toFloat()
+            val r1 = (r * Math.cos(lat1)).toFloat()
+
+            val verts = FloatArray((slices + 1) * 2 * 3)
+            for (j in 0..slices) {
+                val lng = 2.0 * Math.PI * j.toDouble() / slices
+                val x = Math.cos(lng).toFloat()
+                val z = Math.sin(lng).toFloat()
+                val idx = j * 6
+                verts[idx] = r1 * x; verts[idx + 1] = y1; verts[idx + 2] = r1 * z
+                verts[idx + 3] = r0 * x; verts[idx + 4] = y0; verts[idx + 5] = r0 * z
             }
-            drawLine(verts, color)
+
+            val buffer = ByteBuffer.allocateDirect(verts.size * 4)
+                .order(ByteOrder.nativeOrder()).asFloatBuffer().put(verts)
+            buffer.position(0)
+            GLES20.glVertexAttribPointer(positionHandle, 3, GLES20.GL_FLOAT, false, 0, buffer)
+            GLES20.glEnableVertexAttribArray(positionHandle)
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, (slices + 1) * 2)
         }
     }
 

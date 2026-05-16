@@ -44,6 +44,8 @@ class _ArAxesScreenState extends State<ArAxesScreen> with WidgetsBindingObserver
 
   // Map saved state
   bool _mapSaved = false;
+  bool _nodesLoadedIntoNative = false;
+  List<MapNode> _savedNodePositions = [];
 
   @override
   void initState() {
@@ -58,12 +60,29 @@ class _ArAxesScreenState extends State<ArAxesScreen> with WidgetsBindingObserver
       setState(() {
         _registeredAnchors.addAll(map.anchors);
         _primaryQrId = map.primaryQrId;
+        _savedNodePositions = map.nodes;
         for (final node in map.nodes) {
           _nodeCounter++;
           _nodes.add(ArNode(id: node.id, name: node.name));
         }
         _mapSaved = true;
         _status = 'Map loaded (${map.anchors.length} anchors). Scan any QR...';
+      });
+    }
+  }
+
+  /// Load saved nodes into native — only call AFTER origin is locked.
+  void _loadNodesIntoNative() {
+    if (_nodesLoadedIntoNative || _savedNodePositions.isEmpty) return;
+    _nodesLoadedIntoNative = true;
+
+    for (final node in _savedNodePositions) {
+      _channel?.invokeMethod('addNode', {
+        'id': node.id,
+        'name': node.name,
+        'x': node.x,
+        'y': node.y,
+        'z': node.z,
       });
     }
   }
@@ -102,6 +121,9 @@ class _ArAxesScreenState extends State<ArAxesScreen> with WidgetsBindingObserver
             registeredAt: DateTime.now(),
           ));
         }
+
+        // After origin is locked, load saved nodes into native
+        _loadNodesIntoNative();
       } else if (call.method == 'onConfidenceUpdate') {
         final data = Map<String, dynamic>.from(call.arguments as Map);
         setState(() {
@@ -220,24 +242,18 @@ class _ArAxesScreenState extends State<ArAxesScreen> with WidgetsBindingObserver
       _primaryQrId = map.primaryQrId;
       _nodes.clear();
       _nodeCounter = 0;
+      _savedNodePositions = map.nodes;
+      _nodesLoadedIntoNative = false;
       for (final node in map.nodes) {
         _nodeCounter++;
         _nodes.add(ArNode(id: node.id, name: node.name));
       }
       _mapSaved = true;
-      _status = 'Map loaded: ${map.anchors.length} anchors, ${map.nodes.length} nodes. Scan any QR to sync.';
+      _status = 'Map loaded: ${map.anchors.length} anchors, ${map.nodes.length} nodes. Scan QR to sync.';
     });
 
-    // Reload nodes in native with saved positions
-    for (final node in map.nodes) {
-      _channel?.invokeMethod('addNode', {
-        'id': node.id,
-        'name': node.name,
-        'x': node.x,
-        'y': node.y,
-        'z': node.z,
-      });
-    }
+    // Nodes will be loaded into native when QR is scanned (origin locked)
+    // Don't send now — native doesn't have origin yet
 
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
