@@ -142,6 +142,12 @@ class ArCoreAxesView(
                     }
                     result.success(positions)
                 }
+                "addPath" -> {
+                    val fromId = call.argument<String>("fromId") ?: ""
+                    val toId = call.argument<String>("toId") ?: ""
+                    addPath(fromId, toId)
+                    result.success(null)
+                }
                 "dispose" -> {
                     session?.close()
                     result.success(null)
@@ -169,6 +175,17 @@ class ArCoreAxesView(
         val node = NodeData(id = id, name = name, selected = false, x = x, y = y, z = z)
         nodes.add(node)
         android.util.Log.d("ArCoreAxes", "Node loaded at (${x}, ${y}, ${z})")
+    }
+
+    // --- Path Management ---
+    data class PathData(val fromId: String, val toId: String)
+    private val paths = mutableListOf<PathData>()
+
+    private fun addPath(fromId: String, toId: String) {
+        // Don't duplicate
+        if (paths.any { (it.fromId == fromId && it.toId == toId) || (it.fromId == toId && it.toId == fromId) }) return
+        paths.add(PathData(fromId, toId))
+        android.util.Log.d("ArCoreAxes", "Path added: $fromId → $toId")
     }
 
     private fun selectNodeById(id: String) {
@@ -452,6 +469,29 @@ class ArCoreAxesView(
                         val color = if (node.selected) floatArrayOf(1f, 0f, 0f, 1f)
                                     else floatArrayOf(0f, 1f, 0f, 1f)
                         axesRenderer?.drawSphere(viewMatrix, projMatrix, combinedMatrix, color, 0.012f)
+                    }
+
+                    // Render paths (cyan lines between connected nodes)
+                    for (path in paths) {
+                        val fromNode = nodes.find { it.id == path.fromId }
+                        val toNode = nodes.find { it.id == path.toId }
+                        if (fromNode != null && toNode != null) {
+                            // Compute world positions of both nodes
+                            val fromWorld = floatArrayOf(
+                                lockedOriginMatrix[0]*fromNode.x + lockedOriginMatrix[4]*fromNode.y + lockedOriginMatrix[8]*fromNode.z + lockedOriginMatrix[12],
+                                lockedOriginMatrix[1]*fromNode.x + lockedOriginMatrix[5]*fromNode.y + lockedOriginMatrix[9]*fromNode.z + lockedOriginMatrix[13],
+                                lockedOriginMatrix[2]*fromNode.x + lockedOriginMatrix[6]*fromNode.y + lockedOriginMatrix[10]*fromNode.z + lockedOriginMatrix[14],
+                            )
+                            val toWorld = floatArrayOf(
+                                lockedOriginMatrix[0]*toNode.x + lockedOriginMatrix[4]*toNode.y + lockedOriginMatrix[8]*toNode.z + lockedOriginMatrix[12],
+                                lockedOriginMatrix[1]*toNode.x + lockedOriginMatrix[5]*toNode.y + lockedOriginMatrix[9]*toNode.z + lockedOriginMatrix[13],
+                                lockedOriginMatrix[2]*toNode.x + lockedOriginMatrix[6]*toNode.y + lockedOriginMatrix[10]*toNode.z + lockedOriginMatrix[14],
+                            )
+                            // Draw line in world space (identity model matrix)
+                            val identityMatrix = FloatArray(16)
+                            android.opengl.Matrix.setIdentityM(identityMatrix, 0)
+                            axesRenderer?.drawPath(viewMatrix, projMatrix, fromWorld, toWorld)
+                        }
                     }
 
                     // Render environmental anchor indicators
@@ -886,6 +926,30 @@ class AxesRenderer {
         GLES20.glEnableVertexAttribArray(positionHandle)
         GLES20.glUniform4fv(colorHandle, 1, color, 0)
         GLES20.glDrawArrays(GLES20.GL_LINES, 0, vertices.size / 3)
+    }
+
+    /**
+     * Draw a path line between two world-space points.
+     * Cyan color, thick line.
+     */
+    fun drawPath(viewMatrix: FloatArray, projMatrix: FloatArray, from: FloatArray, to: FloatArray) {
+        GLES20.glUseProgram(program)
+        GLES20.glLineWidth(6f)
+        GLES20.glEnable(GLES20.GL_DEPTH_TEST)
+
+        // Use identity model matrix (points already in world space)
+        val identityMatrix = FloatArray(16)
+        android.opengl.Matrix.setIdentityM(identityMatrix, 0)
+
+        val mvMatrix = FloatArray(16)
+        val mvpMatrix = FloatArray(16)
+        android.opengl.Matrix.multiplyMM(mvMatrix, 0, viewMatrix, 0, identityMatrix, 0)
+        android.opengl.Matrix.multiplyMM(mvpMatrix, 0, projMatrix, 0, mvMatrix, 0)
+        GLES20.glUniformMatrix4fv(mvpMatrixHandle, 1, false, mvpMatrix, 0)
+
+        val verts = floatArrayOf(from[0], from[1], from[2], to[0], to[1], to[2])
+        val cyan = floatArrayOf(0f, 1f, 1f, 1f)
+        drawLine(verts, cyan)
     }
 
     private fun createProgram(vs: String, fs: String): Int {

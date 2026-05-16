@@ -12,6 +12,14 @@ class ArNode {
   ArNode({required this.id, required this.name, this.selected = false});
 }
 
+/// A path connecting two nodes.
+class ArPath {
+  final String fromNodeId;
+  final String toNodeId;
+
+  ArPath({required this.fromNodeId, required this.toNodeId});
+}
+
 /// AR screen with node management + map save/load.
 class ArAxesScreen extends StatefulWidget {
   const ArAxesScreen({super.key});
@@ -27,6 +35,7 @@ class _ArAxesScreenState extends State<ArAxesScreen> with WidgetsBindingObserver
 
   // Node management
   final List<ArNode> _nodes = [];
+  final List<ArPath> _paths = [];
   int _nodeCounter = 0;
 
   // Multi-anchor: dynamically registered QR anchors
@@ -484,13 +493,13 @@ class _ArAxesScreenState extends State<ArAxesScreen> with WidgetsBindingObserver
               ),
             ),
 
-          // Node list (left side)
+          // Node list (left side) — drag to connect
           if (_nodes.isNotEmpty)
             Positioned(
               top: MediaQuery.of(context).padding.top + 80,
               left: 12,
               child: Container(
-                width: 160,
+                width: 170,
                 constraints: BoxConstraints(
                   maxHeight: MediaQuery.of(context).size.height * 0.4,
                 ),
@@ -498,11 +507,40 @@ class _ArAxesScreenState extends State<ArAxesScreen> with WidgetsBindingObserver
                   color: Colors.black.withAlpha(200),
                   borderRadius: BorderRadius.circular(10),
                 ),
-                child: ListView.builder(
-                  shrinkWrap: true,
-                  padding: const EdgeInsets.symmetric(vertical: 6),
-                  itemCount: _nodes.length,
-                  itemBuilder: (ctx, i) => _buildNodeItem(_nodes[i]),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // Header
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(10, 8, 10, 4),
+                      child: Row(
+                        children: [
+                          const Text('NODES', style: TextStyle(
+                            color: Colors.white54, fontSize: 9, letterSpacing: 1.2)),
+                          const Spacer(),
+                          Text('${_paths.length} paths', style: const TextStyle(
+                            color: Colors.cyan, fontSize: 9)),
+                        ],
+                      ),
+                    ),
+                    // Node list
+                    Flexible(
+                      child: ReorderableListView.builder(
+                        shrinkWrap: true,
+                        padding: const EdgeInsets.symmetric(vertical: 4),
+                        itemCount: _nodes.length,
+                        onReorder: _onNodeReorder,
+                        proxyDecorator: (child, index, animation) {
+                          return Material(
+                            color: Colors.cyan.withAlpha(40),
+                            borderRadius: BorderRadius.circular(6),
+                            child: child,
+                          );
+                        },
+                        itemBuilder: (ctx, i) => _buildNodeItem(_nodes[i], i),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),
@@ -586,11 +624,18 @@ class _ArAxesScreenState extends State<ArAxesScreen> with WidgetsBindingObserver
     );
   }
 
-  Widget _buildNodeItem(ArNode node) {
+  Widget _buildNodeItem(ArNode node, int index) {
+    // Show connection indicator if this node connects to next
+    final hasPathToNext = index < _nodes.length - 1 &&
+        _paths.any((p) =>
+            (p.fromNodeId == node.id && p.toNodeId == _nodes[index + 1].id) ||
+            (p.toNodeId == node.id && p.fromNodeId == _nodes[index + 1].id));
+
     return GestureDetector(
+      key: ValueKey(node.id),
       onTap: () => _selectNode(node),
       child: Container(
-        margin: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+        margin: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
         decoration: BoxDecoration(
           color: node.selected ? Colors.red.withAlpha(60) : Colors.transparent,
@@ -602,27 +647,80 @@ class _ArAxesScreenState extends State<ArAxesScreen> with WidgetsBindingObserver
         ),
         child: Row(
           children: [
-            Icon(
-              Icons.circle,
-              size: 12,
-              color: node.selected ? Colors.red : Colors.green,
-            ),
-            const SizedBox(width: 8),
+            // Connection dot
+            Icon(Icons.circle, size: 10,
+              color: node.selected ? Colors.red : Colors.green),
+            const SizedBox(width: 6),
             Expanded(
-              child: Text(
-                node.name,
+              child: Text(node.name,
                 style: TextStyle(
                   color: node.selected ? Colors.red : Colors.white,
-                  fontSize: 12,
+                  fontSize: 11,
                   fontWeight: node.selected ? FontWeight.bold : FontWeight.normal,
                 ),
                 overflow: TextOverflow.ellipsis,
               ),
             ),
+            // Path indicator
+            if (hasPathToNext)
+              const Icon(Icons.arrow_downward, size: 12, color: Colors.cyan),
+            // Drag handle
+            const Icon(Icons.drag_handle, size: 14, color: Colors.white30),
           ],
         ),
       ),
     );
+  }
+
+  /// When user reorders nodes in the list, create a path between adjacent nodes.
+  void _onNodeReorder(int oldIndex, int newIndex) {
+    if (newIndex > oldIndex) newIndex--;
+
+    setState(() {
+      final node = _nodes.removeAt(oldIndex);
+      _nodes.insert(newIndex, node);
+
+      // Create path: connect the moved node to its new neighbor
+      // Connect to the node below it (next in list)
+      if (newIndex < _nodes.length - 1) {
+        final fromId = _nodes[newIndex].id;
+        final toId = _nodes[newIndex + 1].id;
+
+        // Don't duplicate paths
+        final exists = _paths.any((p) =>
+            (p.fromNodeId == fromId && p.toNodeId == toId) ||
+            (p.fromNodeId == toId && p.toNodeId == fromId));
+
+        if (!exists) {
+          _paths.add(ArPath(fromNodeId: fromId, toNodeId: toId));
+
+          // Send path to native for 3D rendering
+          _channel?.invokeMethod('addPath', {
+            'fromId': fromId,
+            'toId': toId,
+          });
+        }
+      }
+
+      // Also connect to node above
+      if (newIndex > 0) {
+        final fromId = _nodes[newIndex - 1].id;
+        final toId = _nodes[newIndex].id;
+
+        final exists = _paths.any((p) =>
+            (p.fromNodeId == fromId && p.toNodeId == toId) ||
+            (p.fromNodeId == toId && p.toNodeId == fromId));
+
+        if (!exists) {
+          _paths.add(ArPath(fromNodeId: fromId, toNodeId: toId));
+
+          _channel?.invokeMethod('addPath', {
+            'fromId': fromId,
+            'toId': toId,
+          });
+        }
+      }
+    });
   }
 
   Widget _actionButton({
