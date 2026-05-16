@@ -142,15 +142,12 @@ class _ArAxesScreenState extends State<ArAxesScreen> with WidgetsBindingObserver
   // --- Map Save ---
 
   Future<void> _saveMap() async {
-    // Collect node positions (use 0,0,0 as placeholder — native has real positions)
     final nodes = _nodes.map((n) => MapNode(
       id: n.id, name: n.name, x: 0, y: 0, z: 0,
     )).toList();
 
-    // If no primary set yet, use first detected QR
     final primary = _primaryQrId ?? _lastDetectedQrId ?? 'unknown';
 
-    // Register primary if not done
     if (_registeredAnchors.isEmpty && _lastDetectedQrId != null) {
       _registeredAnchors.add(MapAnchor(
         qrId: _lastDetectedQrId!,
@@ -174,8 +171,51 @@ class _ArAxesScreenState extends State<ArAxesScreen> with WidgetsBindingObserver
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Map saved: ${_registeredAnchors.length} anchors, ${_nodes.length} nodes'),
+          content: Text('✓ Map saved: ${_registeredAnchors.length} anchors, ${_nodes.length} nodes'),
           backgroundColor: Colors.green.shade700,
+        ),
+      );
+    }
+  }
+
+  Future<void> _loadMap() async {
+    final map = await MapStorageService.loadMap();
+    if (map == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('No saved map found'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+      return;
+    }
+
+    setState(() {
+      _registeredAnchors.clear();
+      _registeredAnchors.addAll(map.anchors);
+      _primaryQrId = map.primaryQrId;
+      _nodes.clear();
+      _nodeCounter = 0;
+      for (final node in map.nodes) {
+        _nodeCounter++;
+        _nodes.add(ArNode(id: node.id, name: node.name));
+      }
+      _mapSaved = true;
+      _status = 'Map loaded: ${map.anchors.length} anchors, ${map.nodes.length} nodes. Scan any QR to sync.';
+    });
+
+    // Reload nodes in native
+    for (final node in map.nodes) {
+      _channel?.invokeMethod('addNode', {'id': node.id, 'name': node.name});
+    }
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('✓ Map loaded: ${map.anchors.length} anchors, ${map.nodes.length} nodes'),
+          backgroundColor: Colors.blue.shade700,
         ),
       );
     }
@@ -449,6 +489,16 @@ class _ArAxesScreenState extends State<ArAxesScreen> with WidgetsBindingObserver
                     _mapSaved ? Icons.cloud_done : Icons.save,
                     color: Colors.white, size: 20,
                   ),
+                ),
+
+                const SizedBox(width: 4),
+
+                // Load map button
+                FloatingActionButton.small(
+                  heroTag: 'load_map',
+                  onPressed: _loadMap,
+                  backgroundColor: Colors.orange,
+                  child: const Icon(Icons.folder_open, color: Colors.white, size: 20),
                 ),
 
                 const SizedBox(width: 12),
