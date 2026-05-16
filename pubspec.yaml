@@ -1,0 +1,28 @@
+name: qr_origin
+description: QR-based absolute coordinate system establishment for AR navigation.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.2.0 <4.0.0'
+  flutter: '>=3.16.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  vector_math: ^2.1.4
+  permission_handler: ^11.0.0
+  path_provider: ^2.1.0
+  camera: ^0.11.0
+  google_mlkit_barcode_scanning: ^0.12.0
+  sensors_plus: ^6.0.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/qr_reference.jpg
