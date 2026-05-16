@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
+import 'package:qr_origin/services/map_storage_service.dart';
 
 /// A placed node in the AR scene.
 class ArNode {
@@ -11,7 +12,7 @@ class ArNode {
   ArNode({required this.id, required this.name, this.selected = false});
 }
 
-/// AR screen with node management.
+/// AR screen with node management + map save/load.
 class ArAxesScreen extends StatefulWidget {
   const ArAxesScreen({super.key});
 
@@ -28,6 +29,11 @@ class _ArAxesScreenState extends State<ArAxesScreen> with WidgetsBindingObserver
   final List<ArNode> _nodes = [];
   int _nodeCounter = 0;
 
+  // Multi-anchor: dynamically registered QR anchors
+  final List<MapAnchor> _registeredAnchors = [];
+  String? _primaryQrId;
+  String? _lastDetectedQrId;
+
   // Flow 2 Phase 4: Confidence + Dead Reckoning
   double _confidence = 0.0;
   bool _frozen = false;
@@ -36,10 +42,30 @@ class _ArAxesScreenState extends State<ArAxesScreen> with WidgetsBindingObserver
   int _trackingAnchors = 0;
   bool _qrVisible = false;
 
+  // Map saved state
+  bool _mapSaved = false;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _loadSavedMap();
+  }
+
+  Future<void> _loadSavedMap() async {
+    final map = await MapStorageService.loadMap();
+    if (map != null) {
+      setState(() {
+        _registeredAnchors.addAll(map.anchors);
+        _primaryQrId = map.primaryQrId;
+        for (final node in map.nodes) {
+          _nodeCounter++;
+          _nodes.add(ArNode(id: node.id, name: node.name));
+        }
+        _mapSaved = true;
+        _status = 'Map loaded (${map.anchors.length} anchors). Scan any QR...';
+      });
+    }
   }
 
   @override
@@ -52,12 +78,30 @@ class _ArAxesScreenState extends State<ArAxesScreen> with WidgetsBindingObserver
     _channel = MethodChannel('qr_origin/ar_view_$id');
     _channel!.setMethodCallHandler((call) async {
       if (call.method == 'onImageTracked') {
+        final data = call.arguments;
+        String qrId = 'unknown';
+        if (data is Map) {
+          qrId = (data['name'] as String?) ?? 'unknown';
+        }
         setState(() {
           _tracked = true;
           _qrVisible = true;
           _confidence = 1.0;
-          _status = '✓ QR detected — origin locked';
+          _lastDetectedQrId = qrId;
+          _primaryQrId ??= qrId;
+          _status = '✓ QR "$qrId" detected — origin locked';
         });
+
+        // Auto-register this QR if not known
+        if (!_registeredAnchors.any((a) => a.qrId == qrId)) {
+          _registeredAnchors.add(MapAnchor(
+            qrId: qrId,
+            isPrimary: _registeredAnchors.isEmpty,
+            x: 0, y: 0, z: 0,
+            qx: 0, qy: 0, qz: 0, qw: 1,
+            registeredAt: DateTime.now(),
+          ));
+        }
       } else if (call.method == 'onConfidenceUpdate') {
         final data = Map<String, dynamic>.from(call.arguments as Map);
         setState(() {
@@ -93,6 +137,48 @@ class _ArAxesScreenState extends State<ArAxesScreen> with WidgetsBindingObserver
       }
     });
     setState(() => _status = 'Camera ready. Point at QR code...');
+  }
+
+  // --- Map Save ---
+
+  Future<void> _saveMap() async {
+    // Collect node positions (use 0,0,0 as placeholder — native has real positions)
+    final nodes = _nodes.map((n) => MapNode(
+      id: n.id, name: n.name, x: 0, y: 0, z: 0,
+    )).toList();
+
+    // If no primary set yet, use first detected QR
+    final primary = _primaryQrId ?? _lastDetectedQrId ?? 'unknown';
+
+    // Register primary if not done
+    if (_registeredAnchors.isEmpty && _lastDetectedQrId != null) {
+      _registeredAnchors.add(MapAnchor(
+        qrId: _lastDetectedQrId!,
+        isPrimary: true,
+        x: 0, y: 0, z: 0,
+        qx: 0, qy: 0, qz: 0, qw: 1,
+        registeredAt: DateTime.now(),
+      ));
+    }
+
+    final mapData = MapData(
+      primaryQrId: primary,
+      anchors: _registeredAnchors,
+      nodes: nodes,
+      savedAt: DateTime.now(),
+    );
+
+    await MapStorageService.saveMap(mapData);
+    setState(() => _mapSaved = true);
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Map saved: ${_registeredAnchors.length} anchors, ${_nodes.length} nodes'),
+          backgroundColor: Colors.green.shade700,
+        ),
+      );
+    }
   }
 
   // --- Node Actions ---
@@ -352,11 +438,23 @@ class _ArAxesScreenState extends State<ArAxesScreen> with WidgetsBindingObserver
                   child: const Icon(Icons.add_location_alt, color: Colors.white),
                 ),
 
+                const SizedBox(width: 8),
+
+                // Save map button
+                FloatingActionButton.small(
+                  heroTag: 'save_map',
+                  onPressed: _tracked ? _saveMap : null,
+                  backgroundColor: _tracked ? Colors.blue : Colors.grey,
+                  child: Icon(
+                    _mapSaved ? Icons.cloud_done : Icons.save,
+                    color: Colors.white, size: 20,
+                  ),
+                ),
+
                 const SizedBox(width: 12),
 
                 // Selected node actions
                 if (selectedNode != null) ...[
-                  // Rename
                   _actionButton(
                     icon: Icons.edit,
                     label: 'Rename',
@@ -364,7 +462,6 @@ class _ArAxesScreenState extends State<ArAxesScreen> with WidgetsBindingObserver
                     onTap: () => _renameNode(selectedNode),
                   ),
                   const SizedBox(width: 8),
-                  // Delete
                   _actionButton(
                     icon: Icons.delete,
                     label: 'Delete',
