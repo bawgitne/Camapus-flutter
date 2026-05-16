@@ -107,7 +107,16 @@ class ArCoreAxesView(
                 "addNode" -> {
                     val id = call.argument<String>("id") ?: ""
                     val name = call.argument<String>("name") ?: ""
-                    addNodeSphere(id, name)
+                    val x = call.argument<Double>("x")?.toFloat()
+                    val y = call.argument<Double>("y")?.toFloat()
+                    val z = call.argument<Double>("z")?.toFloat()
+                    if (x != null && y != null && z != null) {
+                        // Load node at specific position (from saved map)
+                        addNodeAtPosition(id, name, x, y, z)
+                    } else {
+                        // Place at current camera position
+                        addNodeSphere(id, name)
+                    }
                     result.success(null)
                 }
                 "selectNode" -> {
@@ -125,6 +134,13 @@ class ArCoreAxesView(
                     val name = call.argument<String>("name") ?: ""
                     renameNodeById(id, name)
                     result.success(null)
+                }
+                "getNodePositions" -> {
+                    val positions = mutableMapOf<String, Map<String, Float>>()
+                    for (node in nodes) {
+                        positions[node.id] = mapOf("x" to node.x, "y" to node.y, "z" to node.z)
+                    }
+                    result.success(positions)
                 }
                 "dispose" -> {
                     session?.close()
@@ -146,7 +162,13 @@ class ArCoreAxesView(
         )
         nodes.forEach { it.selected = false }
         nodes.add(node)
-        android.util.Log.d("ArCoreAxes", "Node added at (${node.x}, ${node.y}, ${node.z})")
+        android.util.Log.d("ArCoreAxes", "Node added at camera pos (${node.x}, ${node.y}, ${node.z})")
+    }
+
+    private fun addNodeAtPosition(id: String, name: String, x: Float, y: Float, z: Float) {
+        val node = NodeData(id = id, name = name, selected = false, x = x, y = y, z = z)
+        nodes.add(node)
+        android.util.Log.d("ArCoreAxes", "Node loaded at (${x}, ${y}, ${z})")
     }
 
     private fun selectNodeById(id: String) {
@@ -364,14 +386,18 @@ class ArCoreAxesView(
                         }
                     }
 
-                    // Update camera relative position (using computed origin)
-                    val originPose = Pose.makeTranslation(
-                        lockedOriginMatrix[12], lockedOriginMatrix[13], lockedOriginMatrix[14])
-                    val inversePose = originPose.inverse()
-                    val cameraInQrSpace = inversePose.compose(camera.pose)
-                    lastCameraRelativeX = cameraInQrSpace.tx()
-                    lastCameraRelativeY = cameraInQrSpace.ty()
-                    lastCameraRelativeZ = cameraInQrSpace.tz()
+                    // Update camera relative position using full matrix inverse
+                    // lockedOriginMatrix is the 4x4 transform of origin in world space
+                    // camera relative = inverse(originMatrix) × cameraWorldMatrix
+                    val invOrigin = FloatArray(16)
+                    android.opengl.Matrix.invertM(invOrigin, 0, lockedOriginMatrix, 0)
+                    val camMatrix = FloatArray(16)
+                    camera.pose.toMatrix(camMatrix, 0)
+                    val relMatrix = FloatArray(16)
+                    android.opengl.Matrix.multiplyMM(relMatrix, 0, invOrigin, 0, camMatrix, 0)
+                    lastCameraRelativeX = relMatrix[12]
+                    lastCameraRelativeY = relMatrix[13]
+                    lastCameraRelativeZ = relMatrix[14]
 
                     // Create environmental anchors after first lock
                     if (originLocked && !anchorsCreated) {
@@ -439,14 +465,18 @@ class ArCoreAxesView(
                     }
                 }
 
-                // Update camera relative even when QR not visible (use locked origin)
+                // Update camera relative even when QR not visible
                 // Phase 6: Don't update when frozen — position is unreliable
-                if (!isFrozen && !qrVisibleThisFrame && lockedOriginPose != null) {
-                    val inversePose = lockedOriginPose!!.inverse()
-                    val cameraInQrSpace = inversePose.compose(camera.pose)
-                    lastCameraRelativeX = cameraInQrSpace.tx()
-                    lastCameraRelativeY = cameraInQrSpace.ty()
-                    lastCameraRelativeZ = cameraInQrSpace.tz()
+                if (!isFrozen && !qrVisibleThisFrame) {
+                    val invOrigin = FloatArray(16)
+                    android.opengl.Matrix.invertM(invOrigin, 0, lockedOriginMatrix, 0)
+                    val camMatrix = FloatArray(16)
+                    camera.pose.toMatrix(camMatrix, 0)
+                    val relMatrix = FloatArray(16)
+                    android.opengl.Matrix.multiplyMM(relMatrix, 0, invOrigin, 0, camMatrix, 0)
+                    lastCameraRelativeX = relMatrix[12]
+                    lastCameraRelativeY = relMatrix[13]
+                    lastCameraRelativeZ = relMatrix[14]
                 }
             }
 

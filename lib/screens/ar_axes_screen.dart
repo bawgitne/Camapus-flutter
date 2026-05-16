@@ -142,9 +142,31 @@ class _ArAxesScreenState extends State<ArAxesScreen> with WidgetsBindingObserver
   // --- Map Save ---
 
   Future<void> _saveMap() async {
-    final nodes = _nodes.map((n) => MapNode(
-      id: n.id, name: n.name, x: 0, y: 0, z: 0,
-    )).toList();
+    // Get real node positions from native
+    final nodes = <MapNode>[];
+    try {
+      final result = await _channel?.invokeMethod('getNodePositions');
+      if (result != null) {
+        final positions = Map<String, dynamic>.from(result as Map);
+        for (final node in _nodes) {
+          final pos = positions[node.id];
+          if (pos != null) {
+            final p = Map<String, dynamic>.from(pos as Map);
+            nodes.add(MapNode(
+              id: node.id, name: node.name,
+              x: (p['x'] as num).toDouble(),
+              y: (p['y'] as num).toDouble(),
+              z: (p['z'] as num).toDouble(),
+            ));
+          }
+        }
+      }
+    } catch (e) {
+      // Fallback: save with 0,0,0
+      for (final node in _nodes) {
+        nodes.add(MapNode(id: node.id, name: node.name, x: 0, y: 0, z: 0));
+      }
+    }
 
     final primary = _primaryQrId ?? _lastDetectedQrId ?? 'unknown';
 
@@ -171,7 +193,7 @@ class _ArAxesScreenState extends State<ArAxesScreen> with WidgetsBindingObserver
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('✓ Map saved: ${_registeredAnchors.length} anchors, ${_nodes.length} nodes'),
+          content: Text('✓ Map saved: ${_registeredAnchors.length} anchors, ${nodes.length} nodes'),
           backgroundColor: Colors.green.shade700,
         ),
       );
@@ -206,9 +228,15 @@ class _ArAxesScreenState extends State<ArAxesScreen> with WidgetsBindingObserver
       _status = 'Map loaded: ${map.anchors.length} anchors, ${map.nodes.length} nodes. Scan any QR to sync.';
     });
 
-    // Reload nodes in native
+    // Reload nodes in native with saved positions
     for (final node in map.nodes) {
-      _channel?.invokeMethod('addNode', {'id': node.id, 'name': node.name});
+      _channel?.invokeMethod('addNode', {
+        'id': node.id,
+        'name': node.name,
+        'x': node.x,
+        'y': node.y,
+        'z': node.z,
+      });
     }
 
     if (mounted) {
