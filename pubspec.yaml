@@ -26,3 +26,5 @@ flutter:
   uses-material-design: true
   assets:
     - assets/qr_reference.jpg
+    - assets/qr_anchors_config.json
+    - assets/qr_anchors/

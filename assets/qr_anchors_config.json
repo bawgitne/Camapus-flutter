@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "description": "Multi-anchor QR configuration. In production, fetched from backend API.",
+  "anchors": [
+    {
+      "id": "QR_ORIGIN_001",
+      "primary": true,
+      "position": [0.0, 0.0, 0.0],
+      "rotation": [0.0, 0.0, 0.0, 1.0],
+      "physicalSize": 0.15,
+      "label": "Main Entrance"
+    },
+    {
+      "id": "QR_ORIGIN_002",
+      "primary": false,
+      "position": [50.0, 0.0, 0.0],
+      "rotation": [0.0, 0.0, 0.0, 1.0],
+      "physicalSize": 0.15,
+      "label": "Corridor A - 50m"
+    },
+    {
+      "id": "QR_ORIGIN_003",
+      "primary": false,
+      "position": [100.0, 0.0, 0.0],
+      "rotation": [0.0, 0.0, 0.0, 1.0],
+      "physicalSize": 0.15,
+      "label": "Corridor A - 100m"
+    },
+    {
+      "id": "QR_ORIGIN_004",
+      "primary": false,
+      "position": [50.0, 0.0, 80.0],
+      "rotation": [0.0, 0.707, 0.0, 0.707],
+      "physicalSize": 0.15,
+      "label": "Building B - Corner"
+    }
+  ]
+}

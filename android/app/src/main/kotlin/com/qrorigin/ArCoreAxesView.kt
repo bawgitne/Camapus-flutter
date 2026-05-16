@@ -161,6 +161,18 @@ class ArCoreAxesView(
         nodes.find { it.id == id }?.name = name
     }
 
+    // ========== Multi-Anchor QR Config ==========
+    data class QrAnchorConfig(
+        val id: String,
+        val isPrimary: Boolean,
+        val posX: Float, val posY: Float, val posZ: Float,
+        val rotX: Float, val rotY: Float, val rotZ: Float, val rotW: Float,
+        val physicalSize: Float,
+        val label: String,
+    )
+
+    private val anchorConfigs = mutableListOf<QrAnchorConfig>()
+
     override fun getView(): View = glView
 
     override fun dispose() {
@@ -176,26 +188,37 @@ class ArCoreAxesView(
         GLES20.glClearColor(0f, 0f, 0f, 1f)
 
         try {
+            // Load multi-anchor config
+            loadAnchorConfig()
+
             session = Session(context).also { sess ->
                 val arConfig = Config(sess).apply {
                     updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
                     focusMode = Config.FocusMode.AUTO
-                    // Enable plane finding for environmental anchors
                     planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
                 }
 
+                // Load ALL QR images into ARCore database
                 val imageDatabase = AugmentedImageDatabase(sess)
-                try {
-                    val inputStream = context.assets.open("flutter_assets/assets/qr_reference.jpg")
-                    val bitmap = BitmapFactory.decodeStream(inputStream)
-                    inputStream.close()
-                    if (bitmap != null) {
-                        imageDatabase.addImage("qr_origin", bitmap, 0.15f)
-                        android.util.Log.d("ArCoreAxes", "QR image loaded: ${bitmap.width}x${bitmap.height}")
+                for (anchorCfg in anchorConfigs) {
+                    try {
+                        val path = "flutter_assets/assets/qr_anchors/${anchorCfg.id}.jpg"
+                        val inputStream = context.assets.open(path)
+                        val bitmap = BitmapFactory.decodeStream(inputStream)
+                        inputStream.close()
+                        if (bitmap != null) {
+                            imageDatabase.addImage(anchorCfg.id, bitmap, anchorCfg.physicalSize)
+                            android.util.Log.d("ArCoreAxes",
+                                "Loaded QR '${anchorCfg.id}' (${anchorCfg.label})")
+                        }
+                    } catch (e: Exception) {
+                        android.util.Log.w("ArCoreAxes",
+                            "Failed to load QR ${anchorCfg.id}: ${e.message}")
                     }
-                } catch (e: Exception) {
-                    android.util.Log.e("ArCoreAxes", "Error loading QR image: ${e.message}")
                 }
+                android.util.Log.d("ArCoreAxes",
+                    "Image database: ${anchorConfigs.size} QR codes loaded")
+
                 arConfig.augmentedImageDatabase = imageDatabase
                 sess.configure(arConfig)
                 sess.resume()
@@ -252,80 +275,105 @@ class ArCoreAxesView(
             }
             lastCameraPosition = camPos
 
-            // --- Check augmented images ---
+            // --- Check augmented images (multi-anchor) ---
             qrVisibleThisFrame = false
             val images = frame.getUpdatedTrackables(AugmentedImage::class.java)
             for (image in images) {
                 if (image.trackingState == TrackingState.TRACKING &&
                     image.trackingMethod == AugmentedImage.TrackingMethod.FULL_TRACKING) {
 
+                    // Lookup config for this QR by name (name = ID set during addImage)
+                    val cfg = anchorConfigs.find { it.id == image.name }
+                    if (cfg == null) {
+                        android.util.Log.w("ArCoreAxes", "Unknown QR detected: ${image.name}")
+                        continue
+                    }
+
                     qrVisibleThisFrame = true
                     val pose = image.centerPose
                     val modelMatrix = FloatArray(16)
                     pose.toMatrix(modelMatrix, 0)
 
-                    // Phase 1: Lock origin on first detection
+                    // Compute where origin should be based on this QR
+                    val observedOriginMatrix = computeOriginFromQr(modelMatrix, cfg)
+
+                    // Phase 1: Lock origin on first detection (any QR)
                     if (!originLocked) {
-                        lockedOriginMatrix = modelMatrix.clone()
-                        lockedOriginPose = pose
-                        originLocked = true
-                        lastAnchorObservationMs = System.currentTimeMillis()
-                        android.util.Log.d("ArCoreAxes", "Origin LOCKED")
+                        if (cfg.isPrimary) {
+                            // Primary QR — direct lock
+                            lockedOriginMatrix = observedOriginMatrix
+                            lockedOriginPose = pose
+                            originLocked = true
+                            lastAnchorObservationMs = System.currentTimeMillis()
+                            android.util.Log.d("ArCoreAxes",
+                                "Origin LOCKED via PRIMARY '${cfg.label}'")
+                        } else {
+                            // Secondary QR — can still establish origin
+                            lockedOriginMatrix = observedOriginMatrix
+                            lockedOriginPose = pose
+                            originLocked = true
+                            lastAnchorObservationMs = System.currentTimeMillis()
+                            android.util.Log.d("ArCoreAxes",
+                                "Origin LOCKED via SECONDARY '${cfg.label}' (primary not seen yet)")
+                        }
 
                         glView.post {
                             channel.invokeMethod("onImageTracked", mapOf(
-                                "name" to (image.name ?: "unknown"),
-                                "extentX" to image.extentX,
-                                "extentZ" to image.extentZ,
+                                "name" to cfg.id,
+                                "label" to cfg.label,
+                                "isPrimary" to cfg.isPrimary,
                             ))
                         }
                     } else {
-                        // Phase 5: QR re-observed — smooth correction instead of snap
-                        // QR is ground truth, but we lerp to avoid visual jump
-                        val observedMatrix = modelMatrix.clone()
-
-                        // Compute delta between current and observed
-                        val dx = observedMatrix[12] - lockedOriginMatrix[12]
-                        val dy = observedMatrix[13] - lockedOriginMatrix[13]
-                        val dz = observedMatrix[14] - lockedOriginMatrix[14]
-                        val delta = Math.sqrt((dx * dx + dy * dy + dz * dz).toDouble()).toFloat()
+                        // Phase 5: QR re-observed — smooth correction
+                        val dx = observedOriginMatrix[12] - lockedOriginMatrix[12]
+                        val dy = observedOriginMatrix[13] - lockedOriginMatrix[13]
+                        val dz = observedOriginMatrix[14] - lockedOriginMatrix[14]
+                        val delta = Math.sqrt((dx*dx + dy*dy + dz*dz).toDouble()).toFloat()
 
                         if (delta < 0.001f) {
-                            // < 1mm difference — snap directly (no visible jump)
-                            lockedOriginMatrix = observedMatrix
+                            // < 1mm — snap
+                            lockedOriginMatrix = observedOriginMatrix
                         } else if (delta < 0.5f) {
-                            // 1mm to 50cm — smooth correction over frames
-                            correctionTarget = observedMatrix
+                            // 1mm–500mm — smooth correction
+                            correctionTarget = observedOriginMatrix
                             correctionFramesRemaining = CORRECTION_FRAMES
                             android.util.Log.d("ArCoreAxes",
-                                "QR re-observed: smooth correction delta=${(delta*1000).toInt()}mm")
+                                "Correction from '${cfg.label}': delta=${(delta*1000).toInt()}mm")
                         } else {
-                            // > 50cm — something is very wrong, snap (likely tracking was lost)
-                            lockedOriginMatrix = observedMatrix
-                            android.util.Log.w("ArCoreAxes",
-                                "QR re-observed: LARGE delta=${(delta*1000).toInt()}mm — snapping")
+                            // > 500mm — snap (or reject if secondary with bad config)
+                            if (cfg.isPrimary) {
+                                lockedOriginMatrix = observedOriginMatrix
+                                android.util.Log.w("ArCoreAxes",
+                                    "LARGE correction from PRIMARY: ${(delta*1000).toInt()}mm — snapping")
+                            } else {
+                                // Secondary with large delta — might be misconfigured
+                                android.util.Log.w("ArCoreAxes",
+                                    "REJECTED correction from '${cfg.label}': delta=${(delta*1000).toInt()}mm (too large for secondary)")
+                            }
                         }
 
                         lockedOriginPose = pose
                         lastAnchorObservationMs = System.currentTimeMillis()
 
-                        // Phase 6: Unfreeze if was frozen
+                        // Unfreeze if was frozen
                         if (isFrozen) {
                             isFrozen = false
                             accumulatedPathLength = 0f
                             glView.post { channel.invokeMethod("onDeadReckoningFreeze", false) }
-                            android.util.Log.d("ArCoreAxes", "UNFROZEN — QR re-observed")
                         }
                     }
 
-                    // Update camera relative position
-                    val inversePose = pose.inverse()
+                    // Update camera relative position (using computed origin)
+                    val originPose = Pose.makeTranslation(
+                        lockedOriginMatrix[12], lockedOriginMatrix[13], lockedOriginMatrix[14])
+                    val inversePose = originPose.inverse()
                     val cameraInQrSpace = inversePose.compose(camera.pose)
                     lastCameraRelativeX = cameraInQrSpace.tx()
                     lastCameraRelativeY = cameraInQrSpace.ty()
                     lastCameraRelativeZ = cameraInQrSpace.tz()
 
-                    // Phase 2: Create environmental anchors after first lock
+                    // Create environmental anchors after first lock
                     if (originLocked && !anchorsCreated) {
                         createEnvironmentalAnchors(sess, pose)
                         anchorsCreated = true
@@ -582,6 +630,64 @@ class ArCoreAxesView(
         m[0] = x[0]; m[1] = x[1]; m[2] = x[2]
         m[4] = y[0]; m[5] = y[1]; m[6] = y[2]
         m[8] = z[0]; m[9] = z[1]; m[10] = z[2]
+    }
+
+    // ========== Multi-Anchor: Config Loading + Origin Computation ==========
+
+    private fun loadAnchorConfig() {
+        try {
+            val inputStream = context.assets.open("flutter_assets/assets/qr_anchors_config.json")
+            val json = inputStream.bufferedReader().readText()
+            inputStream.close()
+
+            val root = org.json.JSONObject(json)
+            val anchors = root.getJSONArray("anchors")
+
+            for (i in 0 until anchors.length()) {
+                val obj = anchors.getJSONObject(i)
+                val pos = obj.getJSONArray("position")
+                val rot = obj.getJSONArray("rotation")
+
+                anchorConfigs.add(QrAnchorConfig(
+                    id = obj.getString("id"),
+                    isPrimary = obj.getBoolean("primary"),
+                    posX = pos.getDouble(0).toFloat(),
+                    posY = pos.getDouble(1).toFloat(),
+                    posZ = pos.getDouble(2).toFloat(),
+                    rotX = rot.getDouble(0).toFloat(),
+                    rotY = rot.getDouble(1).toFloat(),
+                    rotZ = rot.getDouble(2).toFloat(),
+                    rotW = rot.getDouble(3).toFloat(),
+                    physicalSize = obj.getDouble("physicalSize").toFloat(),
+                    label = obj.getString("label"),
+                ))
+            }
+            android.util.Log.d("ArCoreAxes", "Loaded ${anchorConfigs.size} anchor configs")
+        } catch (e: Exception) {
+            android.util.Log.e("ArCoreAxes", "Failed to load config: ${e.message}")
+            anchorConfigs.add(QrAnchorConfig("QR_ORIGIN_001", true, 0f,0f,0f, 0f,0f,0f,1f, 0.15f, "Primary"))
+        }
+    }
+
+    /**
+     * Given a detected QR world pose and its config, compute where origin should be.
+     */
+    private fun computeOriginFromQr(qrWorldMatrix: FloatArray, cfg: QrAnchorConfig): FloatArray {
+        if (cfg.isPrimary) return qrWorldMatrix.clone()
+
+        // relativeToOrigin = rotation(cfg.rot) then translate(cfg.pos)
+        // This is the transform FROM origin TO this QR.
+        // We need inverse: FROM this QR TO origin.
+        val relMatrix = FloatArray(16)
+        android.opengl.Matrix.setIdentityM(relMatrix, 0)
+        android.opengl.Matrix.translateM(relMatrix, 0, cfg.posX, cfg.posY, cfg.posZ)
+
+        val invRelMatrix = FloatArray(16)
+        android.opengl.Matrix.invertM(invRelMatrix, 0, relMatrix, 0)
+
+        val originMatrix = FloatArray(16)
+        android.opengl.Matrix.multiplyMM(originMatrix, 0, qrWorldMatrix, 0, invRelMatrix, 0)
+        return originMatrix
     }
 
     // ========== Confidence ==========
